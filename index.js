@@ -127,13 +127,17 @@ async function botLog(type, payload) {
   }
 }
 
-// ===== HEALTH =====
+// health
 app.get("/health", (req, res) => {
   res.status(200).json({
     status: "ok",
     uptimeSeconds: Math.floor(process.uptime()),
     timestamp: Math.floor(Date.now() / 1000)
   });
+});
+// version
+app.get("/version", (req, res) => {
+  res.send("v2-dbping-route-added");
 });
 
 app.get("/", (req, res) => res.send("OK"));
