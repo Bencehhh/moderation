@@ -90,6 +90,16 @@ async function discordSendMessage(webhookUrl, content) {
   }
 }
 
+async function pingBot() {
+  if (!process.env.BOT_PING_URL) return;
+  try {
+    await fetch(process.env.BOT_PING_URL, { method: "GET" });
+  } catch (e) {
+    console.error("Bot ping failed:", e.message);
+  }
+}
+
+
 async function discordSendCsv(webhookUrl, csvText) {
   try {
     if (typeof FormData === "undefined" || typeof Blob === "undefined") {
@@ -145,13 +155,15 @@ app.get("/", (req, res) => res.send("OK"));
 // ✅ DB ping endpoint (for UptimeRobot)
 app.get("/db/ping", async (req, res) => {
   try {
-    await pool.query("select 1");
-    res.status(200).send("DB OK");
+    await pool.query("select 1");   // keeps Supabase alive
+    await pingBot();                // keeps Replit bot alive
+    res.status(200).send("DB OK + BOT OK");
   } catch (e) {
-    console.error("DB ping failed:", e);
-    res.status(500).send("DB FAIL");
+    console.error("Ping failed:", e);
+    res.status(500).send("PING FAIL");
   }
 });
+
 
 // ===== WHOIS (for !whereis) =====
 app.get("/whois/:userId", verify, (req, res) => {
