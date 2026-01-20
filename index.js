@@ -4,8 +4,8 @@ import crypto from "crypto";
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 
-// ===== ENV VARS (set on Render) =====
-const WEBAPP_SHARED_SECRET = process.env.WEBAPP_SHARED_SECRET; // long random string
+// ===== ENV =====
+const WEBAPP_SHARED_SECRET = process.env.WEBAPP_SHARED_SECRET;
 const DISCORD_WEBHOOK_LOGS = process.env.DISCORD_WEBHOOK_LOGS;
 const DISCORD_WEBHOOK_CSV = process.env.DISCORD_WEBHOOK_CSV;
 
@@ -14,27 +14,26 @@ if (!WEBAPP_SHARED_SECRET || !DISCORD_WEBHOOK_LOGS || !DISCORD_WEBHOOK_CSV) {
   process.exit(1);
 }
 
-// ===== In-memory maps (use Redis/Postgres later if you want persistence) =====
 // userId -> { serverId, lastSeenMs }
 const userToServer = new Map();
 
-// serverId -> Map(commandId -> commandObj)  (reliable: only delete after ACK)
+// serverId -> Map(commandId -> commandObj)
 const serverQueues = new Map();
 
-// simple replay protection via nonce (optional but included)
-const seenNonces = new Map(); // nonce -> expireMs
+// GLOBAL moderation actions for offline users (in-memory)
+const globalActions = new Map(); 
+// userId -> { type:"ban"|"unban", reason, moderator, timestamp }
+
+const seenNonces = new Map();
 setInterval(() => {
   const now = Date.now();
-  for (const [nonce, exp] of seenNonces.entries()) {
-    if (exp <= now) seenNonces.delete(nonce);
-  }
+  for (const [nonce, exp] of seenNonces.entries()) if (exp <= now) seenNonces.delete(nonce);
 }, 30_000).unref();
 
 function verify(req, res, next) {
   const auth = req.headers.authorization || "";
   if (auth !== WEBAPP_SHARED_SECRET) return res.sendStatus(401);
 
-  // Optional anti-replay (we allow missing for easier dev)
   const nonce = req.headers["x-nonce"];
   const ts = req.headers["x-ts"];
   if (nonce && ts) {
@@ -74,17 +73,14 @@ async function discordSendMessage(webhookUrl, content) {
 
 async function discordSendCsv(webhookUrl, csvText) {
   try {
-    // Node 18+ supports FormData + Blob
     if (typeof FormData === "undefined" || typeof Blob === "undefined") {
       const preview = csvText.slice(0, 1800);
       await discordSendMessage(webhookUrl, `📄 CSV (preview)\n\`\`\`\n${preview}\n\`\`\``);
       return;
     }
-
     const form = new FormData();
     form.append("content", "📄 CSV Logs (last 10 minutes)");
     form.append("file", new Blob([csvText], { type: "text/csv" }), "logs.csv");
-
     const resp = await fetch(webhookUrl, { method: "POST", body: form });
     if (!resp.ok) {
       const t = await resp.text().catch(() => "");
@@ -95,10 +91,21 @@ async function discordSendCsv(webhookUrl, csvText) {
   }
 }
 
-// ===== ROUTES =====
+// ===== Health =====
+app.get("/health", (req, res) => {
+  res.status(200).json({ status: "ok", uptimeSeconds: Math.floor(process.uptime()) });
+});
+app.get("/", (req, res) => res.send("OK"));
 
-// Roblox server registers player list every 60s
-// Body: { serverId, placeId, timestamp, players:[{userId, username}] }
+// ===== WHOIS (for !whereis) =====
+app.get("/whois/:userId", verify, (req, res) => {
+  const userId = String(req.params.userId || "");
+  const entry = userToServer.get(userId);
+  if (!entry) return res.status(404).json({ error: "not_found" });
+  res.json({ userId, serverId: entry.serverId, lastSeenMs: entry.lastSeenMs });
+});
+
+// ===== Roblox -> Webapp =====
 app.post("/roblox/register-server", verify, async (req, res) => {
   const { serverId, players, timestamp } = req.body || {};
   if (!serverId || !Array.isArray(players)) return res.status(400).json({ error: "Bad payload" });
@@ -117,8 +124,6 @@ app.post("/roblox/register-server", verify, async (req, res) => {
   res.sendStatus(200);
 });
 
-// Heartbeat every 5 minutes
-// Body: { serverId, uptime, playersCount, timestamp }
 app.post("/roblox/heartbeat", verify, async (req, res) => {
   const b = req.body || {};
   await discordSendMessage(
@@ -128,12 +133,9 @@ app.post("/roblox/heartbeat", verify, async (req, res) => {
   res.sendStatus(200);
 });
 
-// Chat log (filtered output)
-// Body: { serverId, userId, username, channel, text, hasHashtags, wasLikelyFiltered, timestamp }
 app.post("/roblox/chat", verify, async (req, res) => {
   const m = req.body || {};
   const tag = m.wasLikelyFiltered ? "⚠️ Filtered/Hashtags" : "OK";
-
   await discordSendMessage(
     DISCORD_WEBHOOK_LOGS,
     `💬 **Chat** (${tag})
@@ -146,23 +148,6 @@ Time: <t:${m.timestamp}:F>`
   res.sendStatus(200);
 });
 
-// Optional: chat flag events (spam, too many filtered messages, etc.)
-// Body: { serverId, userId, username, reason, timestamp }
-app.post("/roblox/chat-flag", verify, async (req, res) => {
-  const f = req.body || {};
-  await discordSendMessage(
-    DISCORD_WEBHOOK_LOGS,
-    `🚩 **Chat Flag**
-User: ${f.username} (${f.userId})
-Reason: ${f.reason}
-Server: ${f.serverId}
-Time: <t:${f.timestamp}:F>`
-  );
-  res.sendStatus(200);
-});
-
-// CSV upload every 10 minutes
-// Body: { serverId, csv, timestamp }
 app.post("/roblox/csv", verify, async (req, res) => {
   const { serverId, csv, timestamp } = req.body || {};
   if (typeof csv !== "string") return res.status(400).json({ error: "csv missing" });
@@ -172,17 +157,89 @@ app.post("/roblox/csv", verify, async (req, res) => {
   res.sendStatus(200);
 });
 
-// Discord bot creates a command
-// Body: { action:"warn", userId:"123", reason:"...", imageKey:"WARNING_1" }
+// Roblox polls commands for its server
+app.post("/roblox/poll-commands", verify, (req, res) => {
+  const { serverId } = req.body || {};
+  if (!serverId) return res.status(400).json({ error: "Missing serverId" });
+
+  const q = getQueue(serverId);
+  const commands = Array.from(q.values()).slice(0, 25);
+
+  res.json({ commands });
+});
+
+// Roblox ACKs server commands
+app.post("/roblox/ack", verify, (req, res) => {
+  const { serverId, ackIds } = req.body || {};
+  if (!serverId || !Array.isArray(ackIds)) return res.status(400).json({ error: "Bad payload" });
+
+  const q = getQueue(serverId);
+  for (const id of ackIds) q.delete(String(id));
+
+  res.json({ ok: true, remaining: q.size });
+});
+
+// ===== NEW: Roblox checks for offline ban/unban when a player joins =====
+// Roblox calls: POST /roblox/global-action { userId }
+app.post("/roblox/global-action", verify, (req, res) => {
+  const userId = String(req.body?.userId || "");
+  if (!userId) return res.status(400).json({ error: "Missing userId" });
+
+  const action = globalActions.get(userId);
+  if (!action) return res.json({ action: null });
+
+  // One-time delivery, then remove
+  globalActions.delete(userId);
+  res.json({ action });
+});
+
+// ===== Discord bot -> Webapp =====
 app.post("/command", verify, async (req, res) => {
-  const { action, userId, reason, imageKey } = req.body || {};
+  const { action, userId, reason, moderator, imageA, imageB, interval } = req.body || {};
   if (!action || !userId) return res.status(400).json({ error: "Missing action/userId" });
 
-  const entry = userToServer.get(String(userId));
-  if (!entry) return res.status(404).json({ error: "User not found in any active server" });
+  const userIdStr = String(userId);
+
+  // Actions that can be handled even if user is offline (via global queue)
+  if (action === "kick") {
+    // store global ban so it applies even if user isn't currently mapped
+    globalActions.set(userIdStr, {
+      type: "ban",
+      reason: String(reason || "Rule violation"),
+      moderator: String(moderator || "Discord"),
+      timestamp: Math.floor(Date.now() / 1000)
+    });
+  } else if (action === "unban") {
+    globalActions.set(userIdStr, {
+      type: "unban",
+      reason: String(reason || "Unbanned"),
+      moderator: String(moderator || "Discord"),
+      timestamp: Math.floor(Date.now() / 1000)
+    });
+  }
+
+  // If user is currently in a server, route the command there too (for immediate action)
+  const entry = userToServer.get(userIdStr);
+
+  if (!entry) {
+    // For warn/unwarn we require live mapping (must target a server)
+    if (action === "warn" || action === "unwarn") {
+      return res.status(404).json({ error: "User not found in any active server" });
+    }
+
+    // For kick/unban we can accept offline
+    await discordSendMessage(
+      DISCORD_WEBHOOK_LOGS,
+      `🛡️ Queued **${action}** for user **${userIdStr}** (offline/global)`
+    );
+    return res.json({ ok: true, routedServerId: null, offline: true });
+  }
 
   if (Date.now() - entry.lastSeenMs > 2 * 60 * 1000) {
-    return res.status(404).json({ error: "User mapping stale; user may have left" });
+    // same logic: warn/unwarn needs fresh mapping
+    if (action === "warn" || action === "unwarn") {
+      return res.status(404).json({ error: "User mapping stale; user may have left" });
+    }
   }
 
   const cmd = {
@@ -190,10 +247,16 @@ app.post("/command", verify, async (req, res) => {
     action: String(action),
     userId: Number(userId),
     reason: String(reason || ""),
-    imageKey: String(imageKey || "DEFAULT"),
+    moderator: String(moderator || "Discord"),
     issuedAt: Math.floor(Date.now() / 1000),
     serverId: entry.serverId
   };
+
+  if (cmd.action === "warn") {
+    cmd.imageA = String(imageA || "WARNING_A");
+    cmd.imageB = String(imageB || "WARNING_B");
+    cmd.interval = Number(interval || 0.35);
+  }
 
   const q = getQueue(entry.serverId);
   q.set(cmd.id, cmd);
@@ -205,31 +268,6 @@ app.post("/command", verify, async (req, res) => {
 
   res.json({ ok: true, routedServerId: cmd.serverId, commandId: cmd.id });
 });
-
-// Roblox polls its queue (every ~3 seconds)
-// Body: { serverId, timestamp }
-app.post("/roblox/poll-commands", verify, (req, res) => {
-  const { serverId } = req.body || {};
-  if (!serverId) return res.status(400).json({ error: "Missing serverId" });
-
-  const q = getQueue(serverId);
-  const commands = Array.from(q.values()).slice(0, 25);
-
-  res.json({ commands });
-});
-
-// Roblox ACKs executed commands (reliable)
-app.post("/roblox/ack", verify, (req, res) => {
-  const { serverId, ackIds } = req.body || {};
-  if (!serverId || !Array.isArray(ackIds)) return res.status(400).json({ error: "Bad payload" });
-
-  const q = getQueue(serverId);
-  for (const id of ackIds) q.delete(String(id));
-
-  res.json({ ok: true, remaining: q.size });
-});
-
-app.get("/", (req, res) => res.send("OK"));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log("Webapp running on", PORT));
