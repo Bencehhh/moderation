@@ -6,19 +6,29 @@ const app = express();
 app.use(express.json({ limit: "10mb" }));
 
 // ===== ENV =====
-
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-const BOT_INTERNAL_URL = process.env.BOT_INTERNAL_URL;
-const BOT_INTERNAL_SECRET = process.env.BOT_INTERNAL_SECRET;
-const NETWORK_ID_DEFAULT = process.env.NETWORK_ID_DEFAULT || "";
 const WEBAPP_SHARED_SECRET = process.env.WEBAPP_SHARED_SECRET;
 const DISCORD_WEBHOOK_LOGS = process.env.DISCORD_WEBHOOK_LOGS;
 const DISCORD_WEBHOOK_CSV = process.env.DISCORD_WEBHOOK_CSV;
 
+const DATABASE_URL = process.env.DATABASE_URL; // Supabase Session Pooler URL
+const BOT_INTERNAL_URL = process.env.BOT_INTERNAL_URL;
+const BOT_INTERNAL_SECRET = process.env.BOT_INTERNAL_SECRET;
+const NETWORK_ID_DEFAULT = process.env.NETWORK_ID_DEFAULT || "";
+
+// Fail fast if missing
 if (!WEBAPP_SHARED_SECRET || !DISCORD_WEBHOOK_LOGS || !DISCORD_WEBHOOK_CSV) {
   console.error("Missing env vars: WEBAPP_SHARED_SECRET, DISCORD_WEBHOOK_LOGS, DISCORD_WEBHOOK_CSV");
   process.exit(1);
 }
+if (!DATABASE_URL) {
+  console.error("Missing env var: DATABASE_URL");
+  process.exit(1);
+}
+
+// ===== DB POOL =====
+const pool = new Pool({
+  connectionString: DATABASE_URL
+});
 
 // userId -> { serverId, lastSeenMs }
 const userToServer = new Map();
@@ -27,15 +37,17 @@ const userToServer = new Map();
 const serverQueues = new Map();
 
 // GLOBAL moderation actions for offline users (in-memory)
-const globalActions = new Map(); 
+const globalActions = new Map();
 // userId -> { type:"ban"|"unban", reason, moderator, timestamp }
 
+// Anti-replay nonces (optional)
 const seenNonces = new Map();
 setInterval(() => {
   const now = Date.now();
   for (const [nonce, exp] of seenNonces.entries()) if (exp <= now) seenNonces.delete(nonce);
 }, 30_000).unref();
 
+// ===== AUTH MIDDLEWARE =====
 function verify(req, res, next) {
   const auth = req.headers.authorization || "";
   if (auth !== WEBAPP_SHARED_SECRET) return res.sendStatus(401);
@@ -61,6 +73,7 @@ function getQueue(serverId) {
   return serverQueues.get(serverId);
 }
 
+// ===== DISCORD WEBHOOK HELPERS =====
 async function discordSendMessage(webhookUrl, content) {
   try {
     const resp = await fetch(webhookUrl, {
@@ -97,6 +110,7 @@ async function discordSendCsv(webhookUrl, csvText) {
   }
 }
 
+// ===== BOT EMBED LOGGER =====
 async function botLog(type, payload) {
   if (!BOT_INTERNAL_URL) return;
   try {
@@ -104,7 +118,7 @@ async function botLog(type, payload) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": BOT_INTERNAL_SECRET
+        "Authorization": BOT_INTERNAL_SECRET || ""
       },
       body: JSON.stringify({ type, payload })
     });
@@ -113,21 +127,27 @@ async function botLog(type, payload) {
   }
 }
 
-// ===== Health =====
+// ===== HEALTH =====
 app.get("/health", (req, res) => {
-  res.status(200).json({ status: "ok", uptimeSeconds: Math.floor(process.uptime()) });
+  res.status(200).json({
+    status: "ok",
+    uptimeSeconds: Math.floor(process.uptime()),
+    timestamp: Math.floor(Date.now() / 1000)
+  });
 });
+
 app.get("/", (req, res) => res.send("OK"));
-// database ping
+
+// ✅ DB ping endpoint (for UptimeRobot)
 app.get("/db/ping", async (req, res) => {
   try {
     await pool.query("select 1");
     res.status(200).send("DB OK");
   } catch (e) {
+    console.error("DB ping failed:", e);
     res.status(500).send("DB FAIL");
   }
 });
-
 
 // ===== WHOIS (for !whereis) =====
 app.get("/whois/:userId", verify, (req, res) => {
@@ -172,6 +192,7 @@ app.post("/roblox/chat", verify, async (req, res) => {
     DISCORD_WEBHOOK_LOGS,
     `💬 **Chat** (${tag})
 User: ${m.username} (${m.userId})
+Display: ${m.displayName || "?"}
 Channel: ${m.channel}
 Server: ${m.serverId}
 Message: ${m.text}
@@ -211,8 +232,7 @@ app.post("/roblox/ack", verify, (req, res) => {
   res.json({ ok: true, remaining: q.size });
 });
 
-// ===== NEW: Roblox checks for offline ban/unban when a player joins =====
-// Roblox calls: POST /roblox/global-action { userId }
+// Roblox checks for offline ban/unban when a player joins (legacy in-memory)
 app.post("/roblox/global-action", verify, (req, res) => {
   const userId = String(req.body?.userId || "");
   if (!userId) return res.status(400).json({ error: "Missing userId" });
@@ -220,10 +240,11 @@ app.post("/roblox/global-action", verify, (req, res) => {
   const action = globalActions.get(userId);
   if (!action) return res.json({ action: null });
 
-  // One-time delivery, then remove
   globalActions.delete(userId);
   res.json({ action });
 });
+
+// ===== GLOBAL BAN CHECK (Roblox join) =====
 app.post("/ban/check", verify, async (req, res) => {
   const b = req.body || {};
   const networkId = String(b.networkId || NETWORK_ID_DEFAULT || "");
@@ -231,12 +252,13 @@ app.post("/ban/check", verify, async (req, res) => {
 
   if (!networkId || !Number.isFinite(userId)) return res.status(400).json({ error: "bad_payload" });
 
+  // check ban
   const ban = await pool.query(
     "select reason, moderator, banned_at from bans where network_id=$1 and user_id=$2",
     [networkId, userId]
   );
 
-  // log join attempt
+  // always log join attempt
   await pool.query(
     "insert into join_attempts(network_id,user_id,username,display_name,place_id,universe_id,server_id) values ($1,$2,$3,$4,$5,$6,$7)",
     [networkId, userId, b.username || null, b.displayName || null, b.placeId || null, b.universeId || null, b.serverId || null]
@@ -245,7 +267,7 @@ app.post("/ban/check", verify, async (req, res) => {
   if (ban.rowCount > 0) {
     const row = ban.rows[0];
 
-    // tell Discord bot to post an embed
+    // notify bot to post an embed
     await botLog("banned_join_attempt", {
       networkId,
       userId,
@@ -265,6 +287,7 @@ app.post("/ban/check", verify, async (req, res) => {
   res.json({ banned: false });
 });
 
+// Bot adds global ban
 app.post("/ban/add", verify, async (req, res) => {
   const networkId = String(req.body?.networkId || NETWORK_ID_DEFAULT || "");
   const userId = Number(req.body?.userId);
@@ -278,66 +301,61 @@ app.post("/ban/add", verify, async (req, res) => {
     [networkId, userId, reason, moderator]
   );
 
+  // optional audit log
+  await pool.query(
+    "insert into moderation_actions(network_id,action,user_id,reason,moderator) values ($1,$2,$3,$4,$5)",
+    [networkId, "ban", userId, reason, moderator]
+  );
+
   res.json({ ok: true });
 });
 
+// Bot removes global ban
 app.post("/ban/remove", verify, async (req, res) => {
   const networkId = String(req.body?.networkId || NETWORK_ID_DEFAULT || "");
   const userId = Number(req.body?.userId);
+  const moderator = String(req.body?.moderator || "Discord");
 
   if (!networkId || !Number.isFinite(userId)) return res.status(400).json({ error: "bad_payload" });
 
   await pool.query("delete from bans where network_id=$1 and user_id=$2", [networkId, userId]);
+
+  // optional audit log
+  await pool.query(
+    "insert into moderation_actions(network_id,action,user_id,reason,moderator) values ($1,$2,$3,$4,$5)",
+    [networkId, "unban", userId, "Unbanned", moderator]
+  );
+
   res.json({ ok: true });
 });
 
-// ===== Discord bot -> Webapp =====
+// ===== Discord bot -> Webapp (routes in-game server commands) =====
 app.post("/command", verify, async (req, res) => {
   const { action, userId, reason, moderator, imageA, imageB, interval } = req.body || {};
   if (!action || !userId) return res.status(400).json({ error: "Missing action/userId" });
 
   const userIdStr = String(userId);
 
-  // Actions that can be handled even if user is offline (via global queue)
-  if (action === "kick") {
-    // store global ban so it applies even if user isn't currently mapped
-    globalActions.set(userIdStr, {
-      type: "ban",
-      reason: String(reason || "Rule violation"),
-      moderator: String(moderator || "Discord"),
-      timestamp: Math.floor(Date.now() / 1000)
-    });
-  } else if (action === "unban") {
-    globalActions.set(userIdStr, {
-      type: "unban",
-      reason: String(reason || "Unbanned"),
-      moderator: String(moderator || "Discord"),
-      timestamp: Math.floor(Date.now() / 1000)
-    });
-  }
-
-  // If user is currently in a server, route the command there too (for immediate action)
+  // If user is currently in a server, route the command there (for immediate action)
   const entry = userToServer.get(userIdStr);
 
-  if (!entry) {
-    // For warn/unwarn we require live mapping (must target a server)
-    if (action === "warn" || action === "unwarn") {
-      return res.status(404).json({ error: "User not found in any active server" });
-    }
+  // Warn/unwarn must be routed live
+  if (!entry && (action === "warn" || action === "unwarn")) {
+    return res.status(404).json({ error: "User not found in any active server" });
+  }
 
-    // For kick/unban we can accept offline
+  // If offline, respond OK for actions that can be offline
+  if (!entry) {
     await discordSendMessage(
       DISCORD_WEBHOOK_LOGS,
-      `🛡️ Queued **${action}** for user **${userIdStr}** (offline/global)`
+      `🛡️ Received **${action}** for user **${userIdStr}** (no live server mapping)`
     );
     return res.json({ ok: true, routedServerId: null, offline: true });
   }
 
-  if (Date.now() - entry.lastSeenMs > 2 * 60 * 1000) {
-    // same logic: warn/unwarn needs fresh mapping
-    if (action === "warn" || action === "unwarn") {
-      return res.status(404).json({ error: "User mapping stale; user may have left" });
-    }
+  // stale mapping check for warn/unwarn
+  if (Date.now() - entry.lastSeenMs > 2 * 60 * 1000 && (action === "warn" || action === "unwarn")) {
+    return res.status(404).json({ error: "User mapping stale; user may have left" });
   }
 
   const cmd = {
@@ -364,8 +382,15 @@ app.post("/command", verify, async (req, res) => {
     `🛡️ Queued **${cmd.action}** for user **${cmd.userId}** → server **${cmd.serverId}** (id: ${cmd.id})`
   );
 
+  // optional audit log
+  await pool.query(
+    "insert into moderation_actions(network_id,action,user_id,reason,moderator,place_id,server_id) values ($1,$2,$3,$4,$5,$6,$7)",
+    [NETWORK_ID_DEFAULT || cmd.networkId || "", cmd.action, cmd.userId, cmd.reason, cmd.moderator, null, cmd.serverId]
+  ).catch(() => {});
+
   res.json({ ok: true, routedServerId: cmd.serverId, commandId: cmd.id });
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Webapp running on", PORT));
+// ===== START SERVER =====
+const LISTEN_PORT = Number(process.env.PORT || 3000);
+app.listen(LISTEN_PORT, () => console.log("Webapp running on", LISTEN_PORT));
