@@ -1,10 +1,16 @@
 import express from "express";
 import crypto from "crypto";
+import { Pool } from "pg";
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 
 // ===== ENV =====
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const BOT_INTERNAL_URL = process.env.BOT_INTERNAL_URL;
+const BOT_INTERNAL_SECRET = process.env.BOT_INTERNAL_SECRET;
+const NETWORK_ID_DEFAULT = process.env.NETWORK_ID_DEFAULT || "";
 const WEBAPP_SHARED_SECRET = process.env.WEBAPP_SHARED_SECRET;
 const DISCORD_WEBHOOK_LOGS = process.env.DISCORD_WEBHOOK_LOGS;
 const DISCORD_WEBHOOK_CSV = process.env.DISCORD_WEBHOOK_CSV;
@@ -88,6 +94,22 @@ async function discordSendCsv(webhookUrl, csvText) {
     }
   } catch (e) {
     console.error("Discord CSV upload error:", e);
+  }
+}
+
+async function botLog(type, payload) {
+  if (!BOT_INTERNAL_URL) return;
+  try {
+    await fetch(`${BOT_INTERNAL_URL}/internal/log`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": BOT_INTERNAL_SECRET
+      },
+      body: JSON.stringify({ type, payload })
+    });
+  } catch (e) {
+    console.error("Failed to notify bot:", e);
   }
 }
 
@@ -191,6 +213,72 @@ app.post("/roblox/global-action", verify, (req, res) => {
   // One-time delivery, then remove
   globalActions.delete(userId);
   res.json({ action });
+});
+app.post("/ban/check", verify, async (req, res) => {
+  const b = req.body || {};
+  const networkId = String(b.networkId || NETWORK_ID_DEFAULT || "");
+  const userId = Number(b.userId);
+
+  if (!networkId || !Number.isFinite(userId)) return res.status(400).json({ error: "bad_payload" });
+
+  const ban = await pool.query(
+    "select reason, moderator, banned_at from bans where network_id=$1 and user_id=$2",
+    [networkId, userId]
+  );
+
+  // log join attempt
+  await pool.query(
+    "insert into join_attempts(network_id,user_id,username,display_name,place_id,universe_id,server_id) values ($1,$2,$3,$4,$5,$6,$7)",
+    [networkId, userId, b.username || null, b.displayName || null, b.placeId || null, b.universeId || null, b.serverId || null]
+  );
+
+  if (ban.rowCount > 0) {
+    const row = ban.rows[0];
+
+    // tell Discord bot to post an embed
+    await botLog("banned_join_attempt", {
+      networkId,
+      userId,
+      username: b.username,
+      displayName: b.displayName,
+      placeId: b.placeId,
+      universeId: b.universeId,
+      serverId: b.serverId,
+      reason: row.reason,
+      moderator: row.moderator,
+      bannedAt: row.banned_at
+    });
+
+    return res.json({ banned: true, reason: row.reason });
+  }
+
+  res.json({ banned: false });
+});
+
+app.post("/ban/add", verify, async (req, res) => {
+  const networkId = String(req.body?.networkId || NETWORK_ID_DEFAULT || "");
+  const userId = Number(req.body?.userId);
+  const reason = String(req.body?.reason || "Rule violation");
+  const moderator = String(req.body?.moderator || "Discord");
+
+  if (!networkId || !Number.isFinite(userId)) return res.status(400).json({ error: "bad_payload" });
+
+  await pool.query(
+    "insert into bans(network_id,user_id,reason,moderator) values ($1,$2,$3,$4) on conflict (network_id,user_id) do update set reason=excluded.reason, moderator=excluded.moderator, banned_at=now()",
+    [networkId, userId, reason, moderator]
+  );
+
+  res.json({ ok: true });
+});
+
+app.post("/ban/remove", verify, async (req, res) => {
+  const networkId = String(req.body?.networkId || NETWORK_ID_DEFAULT || "");
+  const userId = Number(req.body?.userId);
+
+  if (!networkId || !Number.isFinite(userId)) return res.status(400).json({ error: "bad_payload" });
+
+  await pool.query("delete from bans where network_id=$1 and user_id=$2", [networkId, userId]);
+  res.json({ ok: true });
 });
 
 // ===== Discord bot -> Webapp =====

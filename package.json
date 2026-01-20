@@ -1,8 +1,17 @@
 {
-  "name": "roblox-moderation-webapp",
+  "name": "roblox-moderation-relay",
   "version": "1.0.0",
+  "description": "Relay webapp for Roblox moderation system (Discord + Global bans)",
   "type": "module",
   "main": "index.js",
-  "scripts": { "start": "node index.js" },
-  "dependencies": { "express": "^4.19.2" }
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "pg": "^8.12.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
 }
