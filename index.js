@@ -118,6 +118,16 @@ app.get("/health", (req, res) => {
   res.status(200).json({ status: "ok", uptimeSeconds: Math.floor(process.uptime()) });
 });
 app.get("/", (req, res) => res.send("OK"));
+// database ping
+app.get("/db/ping", async (req, res) => {
+  try {
+    await pool.query("select 1");
+    res.status(200).send("DB OK");
+  } catch (e) {
+    res.status(500).send("DB FAIL");
+  }
+});
+
 
 // ===== WHOIS (for !whereis) =====
 app.get("/whois/:userId", verify, (req, res) => {
