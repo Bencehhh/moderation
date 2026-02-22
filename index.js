@@ -58,6 +58,65 @@ function getQueue(serverId) {
   return serverQueues.get(serverId);
 }
 
+function enqueueCommand(serverId, command) {
+  const q = getQueue(serverId);
+  q.set(command.id, command);
+}
+
+const entry = userToServer.get(String(userId));
+
+if (entry) {
+  enqueueCommand(entry.serverId, {
+    id: crypto.randomUUID(),
+    action: "ban",
+    userId,
+    reason,
+    moderator: msg.author.tag,
+    issuedAt: Math.floor(Date.now() / 1000)
+  });
+}
+
+if (entry) {
+  enqueueCommand(entry.serverId, {
+    id: crypto.randomUUID(),
+    action: "warn",
+    userId,
+    reason,
+    moderator: msg.author.tag,
+    issuedAt: Math.floor(Date.now() / 1000)
+  });
+}
+if (entry) {
+  enqueueCommand(entry.serverId, {
+    id: crypto.randomUUID(),
+    action: "unwarn",
+    userId,
+    reason,
+    moderator: msg.author.tag,
+    issuedAt: Math.floor(Date.now() / 1000)
+  });
+}
+if (entry) {
+  enqueueCommand(entry.serverId, {
+    id: crypto.randomUUID(),
+    action: "kick",
+    userId,
+    reason,
+    moderator: msg.author.tag,
+    issuedAt: Math.floor(Date.now() / 1000)
+  });
+}
+if (entry) {
+  enqueueCommand(entry.serverId, {
+    id: crypto.randomUUID(),
+    action: "unban",
+    userId,
+    reason,
+    moderator: msg.author.tag,
+    issuedAt: Math.floor(Date.now() / 1000)
+  });
+}
+
 /* =======================
    EMBED HELPERS (SINGLE SOURCE)
 ======================= */
