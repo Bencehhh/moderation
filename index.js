@@ -5,9 +5,7 @@ import { Pool } from "pg";
 import {
   Client,
   GatewayIntentBits,
-  REST,
-  Routes,
-  EmbedBuilder
+  EmbedBuilder,
 } from "discord.js";
 
 /* =======================
@@ -62,6 +60,19 @@ function getQueue(serverId) {
   return serverQueues.get(serverId);
 }
 
+function makeEmbed(color, title, fields = [], options = {}) {
+  const embed = new EmbedBuilder()
+    .setColor(color)
+    .setTitle(title)
+    .setTimestamp(new Date());
+
+  if (fields.length) embed.addFields(fields);
+  if (options.footer) embed.setFooter({ text: options.footer });
+  if (options.description) embed.setDescription(options.description);
+
+  return embed;
+}
+
 /* =======================
    WEBHOOK HELPERS
 ======================= */
@@ -88,7 +99,9 @@ function embed(color, title, fields = []) {
 ======================= */
 const client = new Client({
   intents: [
-    GatewayIntentBits.Guilds
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
   ]
 });
 
@@ -102,6 +115,102 @@ client.once("ready", async () => {
     ])
   );
 });
+
+const PREFIX = "!";
+
+client.on("messageCreate", async (msg) => {
+  if (msg.author.bot) return;
+  if (!msg.guild) return;
+  if (!msg.content.startsWith(PREFIX)) return;
+
+  const [cmd, ...args] = msg.content
+    .slice(PREFIX.length)
+    .trim()
+    .split(/\s+/);
+
+  // !help
+  if (cmd === "help") {
+    return msg.reply({
+      embeds: [
+        embed(0x5865f2, "📘 Moderation Commands", [
+          { name: "!help", value: "Show this menu" },
+          { name: "!ban <userid> <reason>", value: "Global ban" },
+          { name: "!unban <userid>", value: "Remove global ban" },
+          { name: "!warn <userid>", value: "Warn player in-game" },
+          { name: "!unwarn <userid>", value: "Stop warning UI" }
+        ])
+      ]
+    });
+  }
+
+  // !ban
+  if (cmd === "ban") {
+    const userId = Number(args[0]);
+    const reason = args.slice(1).join(" ") || "Rule violation";
+    if (!userId) return msg.reply("Usage: `!ban <userid> <reason>`");
+
+    await pool.query(
+      "insert into bans(network_id,user_id,reason,moderator) values ($1,$2,$3,$4) on conflict do update set reason=excluded.reason",
+      [NETWORK_ID_DEFAULT, userId, reason, msg.author.tag]
+    );
+
+    await sendWebhook(
+      DISCORD_WEBHOOK_USERBANS,
+      embed(0xff0000, "🔨 User Banned", [
+        { name: "User ID", value: String(userId) },
+        { name: "Reason", value: reason },
+        { name: "Moderator", value: msg.author.tag }
+      ])
+    );
+
+    return msg.reply(`✅ Banned **${userId}**`);
+  }
+});
+
+
+const embed = makeEmbed(0xff5555, "🚨 USER WARNING", [
+  {
+    name: "👤 Player",
+    value:
+      "```yaml\n" +
+      "Username: testUser\n" +
+      "UserId: 123456\n" +
+      "```",
+    inline: false
+  },
+  {
+    name: "⚠️ Reason",
+    value:
+      "```fix\n" +
+      "Repeated rule violations\n" +
+      "```",
+    inline: false
+  }
+], {
+  footer: "Roblox Moderation System"
+});
+
+makeEmbed(0x55ff88, "✅ WARNING CLEARED", [
+  {
+    name: "👤 Player",
+    value: "```yaml\nUsername: testUser\nUserId: 123456\n```"
+  },
+  {
+    name: "🧹 Action",
+    value: "```diff\n- Warning removed\n```"
+  }
+]);
+
+const rateLimit = new Map();
+
+function limited(key, ms = 3000) {
+  const now = Date.now();
+  if (rateLimit.get(key) > now) return true;
+  rateLimit.set(key, now + ms);
+  return false;
+}
+
+if (limited(req.ip)) return res.sendStatus(429);
 
 /* =======================
    SLASH COMMANDS
@@ -127,12 +236,6 @@ const commands = [
     ]
   }
 ];
-
-const rest = new REST({ version: "10" }).setToken(DISCORD_TOKEN);
-await rest.put(
-  Routes.applicationGuildCommands(DISCORD_CLIENT_ID, GUILD_ID),
-  { body: commands }
-);
 
 /* =======================
    SLASH HANDLER
