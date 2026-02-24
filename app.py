@@ -226,7 +226,7 @@ async def health():
 # =====================
 # START
 # =====================
-async def main():
-    asyncio.create_task(client.start(DISCORD_TOKEN))
 
-asyncio.get_event_loop().create_task(main())
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(client.start(DISCORD_TOKEN))
