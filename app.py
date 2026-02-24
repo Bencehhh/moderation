@@ -29,6 +29,13 @@ NETWORK_ID = os.getenv("NETWORK_ID_DEFAULT", "global")
 
 PREFIX = "!"
 
+@app.middleware("http")
+async def debug_requests(request: Request, call_next):
+    print("➡️ INCOMING:", request.method, request.url.path)
+    print("Headers:", dict(request.headers))
+    response = await call_next(request)
+    return response
+
 # =====================
 # APP + DB
 # =====================
