@@ -6,11 +6,11 @@ from typing import Dict, List
 
 import httpx
 import psycopg
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.responses import JSONResponse
 
-import discord
-from discord import Embed
+import discord 
+from discord import Embed 
 
 # =====================
 # ENV
