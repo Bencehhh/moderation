@@ -6,7 +6,7 @@ from typing import Dict, List
 
 import httpx
 import psycopg
-from fastapi import FastAPI, Request, HTTPException, Header
+from fastapi import FastAPI, Request, Header, HTTPException 
 from fastapi.responses import JSONResponse
 
 import discord 
@@ -221,6 +221,11 @@ async def ack(req: dict, authorization: str = Header(None)):
 @app.get("/health")
 async def health():
     return {"status": "ok", "uptime": time.time()}
+
+
+@app.head("/health")
+def health_head():
+    return
 
 @app.middleware("http")
 async def debug_requests(request: Request, call_next):
