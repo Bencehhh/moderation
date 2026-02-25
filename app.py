@@ -120,20 +120,23 @@ async def on_message(msg: discord.Message):
         with db.cursor() as cur:
             cur.execute(
                 """insert into bans(network_id,user_id,reason,moderator)
-                   values (%s,%s,%s,%s)
-                   on conflict (network_id,user_id)
-                   do update set reason=excluded.reason, banned_at=now()""",
+                values (%s,%s,%s,%s)
+                on conflict (network_id,user_id)
+                do update set reason=excluded.reason, banned_at=now()""",
                 (NETWORK_ID, user_id, reason, msg.author.tag)
             )
             db.commit()
 
-        await send_webhook(
-            DISCORD_WEBHOOK_USERBANS,
-            make_embed(0xFF0000, "🔨 USER BANNED", [
-                {"name": "User ID", "value": str(user_id)},
-                {"name": "Reason", "value": reason}
-            ])
-        )
+        entry = user_to_server.get(user_id)
+        if entry:
+            command = {
+                "id": str(uuid.uuid4()),
+                "action": "ban",
+                "userId": user_id,
+                "reason": reason
+            }
+            get_queue(entry["serverId"])[command["id"]] = command
+
         await msg.reply("User banned.")
         return
 
@@ -165,7 +168,7 @@ async def register(req: Request):
     verify(req)
     data = await req.json()
     server_id = data["serverId"]
-
+    print("REGISTER CALLED:", data) 
     for p in data["players"]:
         user_to_server[p["userId"]] = {
             "serverId": server_id,
@@ -189,7 +192,6 @@ async def register(req: Request):
         )
 
     return JSONResponse({"ok": True})
-print("REGISTER CALLED:", data)
 
 @app.post("/roblox/chat")
 async def chat(req: Request):
@@ -207,10 +209,9 @@ async def chat(req: Request):
 @app.get("/roblox/poll-commands")
 async def poll_commands(serverId: str, request: Request):
     verify(request)
-
+    print("POLL CALLED FOR SERVER:", serverId)
     q = get_queue(serverId)
     return {"commands": list(q.values())}
-print("POLL CALLED FOR SERVER:", serverId)
 
 @app.post("/roblox/ack")
 async def ack(request: Request):
