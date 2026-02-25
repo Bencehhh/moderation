@@ -189,6 +189,7 @@ async def register(req: Request):
         )
 
     return JSONResponse({"ok": True})
+print("REGISTER CALLED:", data)
 
 @app.post("/roblox/chat")
 async def chat(req: Request):
@@ -209,6 +210,7 @@ async def poll_commands(serverId: str, request: Request):
 
     q = get_queue(serverId)
     return {"commands": list(q.values())}
+print("POLL CALLED FOR SERVER:", serverId)
 
 @app.post("/roblox/ack")
 async def ack(request: Request):
@@ -256,6 +258,32 @@ async def check_ban(userId: int, request: Request):
         return {"banned": True, "reason": row[0]}
 
     return {"banned": False}
+
+@app.post("/roblox/player-left")
+async def player_left(request: Request):
+    verify(request)
+    data = await request.json()
+
+    user_id = data["userId"]
+    username = data["username"]
+    server_id = data["serverId"]
+
+    user_to_server.pop(user_id, None)
+
+    await send_webhook(
+        DISCORD_WEBHOOK_LOGS,
+        make_embed(
+            0xFFAA00,
+            "🚪 Player Left",
+            [
+                {"name": "Username", "value": username},
+                {"name": "UserId", "value": str(user_id)},
+                {"name": "Server", "value": server_id}
+            ]
+        )
+    )
+
+    return {"ok": True}
 
 # =====================
 # START
