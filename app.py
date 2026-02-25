@@ -203,19 +203,26 @@ async def chat(req: Request):
     )
     return JSONResponse({"ok": True})
 
-@app.post("/roblox/poll-commands")
-async def poll_commands(req: dict, authorization: str = Header(None)):
-    verify(authorization)
-    server_id = req["serverId"]
-    q = getQueue(server_id)
+@app.get("/roblox/poll-commands")
+async def poll_commands(serverId: str, request: Request):
+    verify(request)
+
+    q = get_queue(serverId)
     return {"commands": list(q.values())}
 
 @app.post("/roblox/ack")
-async def ack(req: dict, authorization: str = Header(None)):
-    verify(authorization)
-    q = getQueue(req["serverId"])
-    for cid in req["ids"]:
+async def ack(request: Request):
+    verify(request)
+    data = await request.json()
+
+    server_id = data["serverId"]
+    ids = data["ids"]
+
+    q = get_queue(server_id)
+
+    for cid in ids:
         q.pop(cid, None)
+
     return {"ok": True}
 
 @app.get("/health")
@@ -233,6 +240,22 @@ async def debug_requests(request: Request, call_next):
     print("Headers:", dict(request.headers))
     response = await call_next(request)
     return response
+
+@app.get("/roblox/check-ban")
+async def check_ban(userId: int, request: Request):
+    verify(request)
+
+    with db.cursor() as cur:
+        cur.execute(
+            "select reason from bans where network_id=%s and user_id=%s",
+            (NETWORK_ID, userId)
+        )
+        row = cur.fetchone()
+
+    if row:
+        return {"banned": True, "reason": row[0]}
+
+    return {"banned": False}
 
 # =====================
 # START
