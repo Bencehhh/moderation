@@ -204,18 +204,17 @@ async def chat(req: Request):
     return JSONResponse({"ok": True})
 
 @app.post("/roblox/poll-commands")
-async def poll(req: Request):
-    verify(req)
-    server_id = (await req.json())["serverId"]
-    q = list(get_queue(server_id).values())
-    return {"commands": q}
+async def poll_commands(req: dict, authorization: str = Header(None)):
+    verify(authorization)
+    server_id = req["serverId"]
+    q = getQueue(server_id)
+    return {"commands": list(q.values())}
 
 @app.post("/roblox/ack")
-async def ack(req: Request):
-    verify(req)
-    data = await req.json()
-    q = get_queue(data["serverId"])
-    for cid in data["ids"]:
+async def ack(req: dict, authorization: str = Header(None)):
+    verify(authorization)
+    q = getQueue(req["serverId"])
+    for cid in req["ids"]:
         q.pop(cid, None)
     return {"ok": True}
 
