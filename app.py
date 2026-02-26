@@ -243,6 +243,15 @@ async def on_message(msg: discord.Message):
     # =========================
     # UNBAN
     # =========================
+    
+@client.event
+async def on_message(msg: discord.Message):
+    if msg.author.bot or not msg.content.startswith(PREFIX):
+        return
+
+    parts = msg.content[len(PREFIX):].split()
+    cmd = parts[0].lower()
+    args = parts[1:]    
     if cmd == "unban":
         print("🔓 Processing UNBAN command")
 
