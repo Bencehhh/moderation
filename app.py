@@ -349,6 +349,35 @@ async def player_left(request: Request):
 
     return {"ok": True}
 
+@app.post("/roblox/teleport-attempt")
+async def teleport_attempt(request: Request):
+    verify(request)
+    data = await request.json()
+
+    user_id = data.get("userId")
+    code = data.get("code")
+    server_id = data.get("serverId")
+    success = data.get("success")
+
+    status_text = "✅ CORRECT CODE" if success else "❌ WRONG CODE"
+
+    embed = make_embed(
+        0x00FF00 if success else 0xFF0000,
+        "🚪 Teleport Code Attempt",
+        [
+            {"name": "User ID", "value": str(user_id)},
+            {"name": "Code Entered", "value": str(code)},
+            {"name": "Server ID", "value": str(server_id)},
+            {"name": "Result", "value": status_text}
+        ]
+    )
+
+    await send_webhook(os.getenv("TELEPORT_SESSION"), embed)
+
+    print("📨 TELEPORT ATTEMPT:", data)
+
+    return {"ok": True}
+
 # =====================
 # START
 # =====================
