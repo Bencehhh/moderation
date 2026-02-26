@@ -174,8 +174,8 @@ async def on_message(msg: discord.Message):
                 "reason": reason
             }
 
-            queue = get_queue(entry["serverId"])
-            queue[command["id"]] = command
+            for server_id in server_queues.keys():
+                get_queue(server_id)[command["id"]] = command
 
             print("✅ ENQUEUED BAN COMMAND:", command)
             print("📤 Current Queue State:", queue)
