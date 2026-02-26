@@ -59,8 +59,20 @@ def make_embed(color, title, fields):
     return e
 
 def verify(req: Request):
-    if req.headers.get("authorization") != WEBAPP_SHARED_SECRET:
+    auth = (
+        req.headers.get("authorization")
+        or req.headers.get("Authorization")
+    )
+
+    if not auth:
+        print("❌ Missing Authorization header")
         raise HTTPException(401)
+
+    if auth.strip() != WEBAPP_SHARED_SECRET.strip():
+        print("❌ Invalid Authorization:", auth)
+        raise HTTPException(401)
+
+
 
 def get_queue(server_id: str):
     if server_id not in server_queues:
@@ -89,9 +101,14 @@ async def on_message(msg: discord.Message):
     if msg.author.bot or not msg.content.startswith(PREFIX):
         return
 
+    print("📩 DISCORD MESSAGE RECEIVED:", msg.content)
+
     parts = msg.content[len(PREFIX):].split()
     cmd = parts[0].lower()
     args = parts[1:]
+
+    print("🔎 Parsed Command:", cmd)
+    print("🔎 Args:", args)
 
     if cmd == "help":
         await msg.reply(embed=make_embed(0x5865F2, "📘 Commands", [
@@ -105,18 +122,35 @@ async def on_message(msg: discord.Message):
         return
 
     if not args:
+        print("⚠️ No arguments provided.")
         return
 
-    user_id = int(args[0])
+    try:
+        user_id = int(args[0])
+    except Exception as e:
+        print("❌ Failed to parse user_id:", e)
+        await msg.reply("Invalid user ID.")
+        return
+
     reason = " ".join(args[1:]) or "Rule violation"
 
+    print("🎯 Target User ID:", user_id)
+    print("📝 Reason:", reason)
+
     entry = user_to_server.get(user_id)
+    print("📦 user_to_server lookup result:", entry)
 
     if cmd in ("warn", "unwarn", "kick") and not entry:
+        print("❌ User not found in active servers.")
         await msg.reply("User not in any active server.")
         return
 
+    # =========================
+    # BAN
+    # =========================
     if cmd == "ban":
+        print("🔨 Processing BAN command")
+
         with db.cursor() as cur:
             cur.execute(
                 """insert into bans(network_id,user_id,reason,moderator)
@@ -127,7 +161,11 @@ async def on_message(msg: discord.Message):
             )
             db.commit()
 
+        print("✅ Database ban inserted/updated")
+
         entry = user_to_server.get(user_id)
+        print("📦 Active server entry for ban:", entry)
+
         if entry:
             command = {
                 "id": str(uuid.uuid4()),
@@ -135,29 +173,50 @@ async def on_message(msg: discord.Message):
                 "userId": user_id,
                 "reason": reason
             }
-            get_queue(entry["serverId"])[command["id"]] = command
+
+            queue = get_queue(entry["serverId"])
+            queue[command["id"]] = command
+
+            print("✅ ENQUEUED BAN COMMAND:", command)
+            print("📤 Current Queue State:", queue)
 
         await msg.reply("User banned.")
         return
 
+    # =========================
+    # UNBAN
+    # =========================
     if cmd == "unban":
+        print("🔓 Processing UNBAN command")
+
         with db.cursor() as cur:
             cur.execute(
                 "delete from bans where network_id=%s and user_id=%s",
                 (NETWORK_ID, user_id)
             )
             db.commit()
+
+        print("✅ Database unban completed")
+
         await msg.reply("User unbanned.")
         return
 
-    # queue roblox command
+    # =========================
+    # WARN / UNWARN / KICK
+    # =========================
     command = {
         "id": str(uuid.uuid4()),
         "action": cmd,
         "userId": user_id,
         "reason": reason
     }
-    get_queue(entry["serverId"])[command["id"]] = command
+
+    queue = get_queue(entry["serverId"])
+    queue[command["id"]] = command
+
+    print("✅ ENQUEUED COMMAND:", command)
+    print("📤 Current Queue State:", queue)
+
     await msg.reply(f"Command `{cmd}` sent to server.")
 
 # =====================
@@ -209,8 +268,12 @@ async def chat(req: Request):
 @app.get("/roblox/poll-commands")
 async def poll_commands(serverId: str, request: Request):
     verify(request)
-    print("POLL CALLED FOR SERVER:", serverId)
+
     q = get_queue(serverId)
+
+    print("📡 POLL FROM:", serverId)
+    print("📤 RETURNING COMMANDS:", list(q.values()))
+
     return {"commands": list(q.values())}
 
 @app.post("/roblox/ack")
