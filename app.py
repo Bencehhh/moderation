@@ -157,133 +157,135 @@ async def on_message(msg: discord.Message):
     parts = msg.content[len(PREFIX):].split()
     cmd = parts[0].lower()
     args = parts[1:]
-    if cmd == "ban":
 
-        print("🔨 BAN COMMAND DETECTED")
+    print("📩 Command received:", cmd, "Args:", args)
 
-    if len(args) < 1:
-        await msg.reply("Usage: !ban <userid> <reason>")
+    # ----------------
+    # HELP COMMAND
+    # ----------------
+    if cmd == "help":
+        await msg.reply(embed=make_embed(0x5865F2, "📘 Commands", [
+            {"name": "!help", "value": "Show this menu"},
+            {"name": "!warn <userid> <reason>", "value": "Warn player"},
+            {"name": "!unwarn <userid>", "value": "Clear warning"},
+            {"name": "!kick <userid> <reason>", "value": "Kick from server"},
+            {"name": "!ban <userid> <reason>", "value": "Global ban"},
+            {"name": "!unban <userid>", "value": "Remove global ban"}
+        ]))
         return
 
-    # Allow raw ID OR mention
-    raw_id = args[0].strip()
+    if not args:
+        await msg.reply("⚠️ Missing arguments.")
+        return
 
+    # ----------------
+    # PARSE USER ID
+    # ----------------
+    raw_id = args[0].strip()
     if raw_id.startswith("<@") and raw_id.endswith(">"):
         raw_id = raw_id.replace("<@", "").replace(">", "").replace("!", "")
 
     try:
         user_id = int(raw_id)
-    except:
-        await msg.reply("Invalid user ID.")
+    except Exception as e:
+        await msg.reply("❌ Invalid user ID.")
+        print("❌ Failed to parse user_id:", e)
         return
 
     reason = " ".join(args[1:]) or "Rule violation"
 
-    print("🎯 Banning User:", user_id)
-    print("📝 Reason:", reason)
-
-    # --- DATABASE ---
-    try:
-        with db.cursor() as cur:
-            cur.execute(
-                """
-                insert into bans(network_id,user_id,reason,moderator)
-                values (%s,%s,%s,%s)
-                on conflict (network_id,user_id)
-                do update set reason=excluded.reason, banned_at=now()
-                """,
-                (NETWORK_ID, user_id, reason, str(msg.author))
-            )
-            db.commit()
-        print("✅ Database updated")
-    except Exception as e:
-        print("❌ Database error:", e)
-        await msg.reply("Database error while banning.")
-        return
-
-    # --- ENQUEUE TO ACTIVE SERVERS ---
-    total_enqueued = 0
-
-    for server_id in list(server_queues.keys()):
-        queue = get_queue(server_id)
+    # ----------------
+    # WARN / UNWARN / KICK
+    # ----------------
+    if cmd in ("warn", "unwarn", "kick"):
+        entry = user_to_server.get(user_id)
+        if not entry:
+            await msg.reply("❌ User not in any active server.")
+            return
 
         command = {
             "id": str(uuid.uuid4()),
-            "action": "ban",
+            "action": cmd,
             "userId": user_id,
             "reason": reason
         }
 
+        queue = get_queue(entry["serverId"])
         queue[command["id"]] = command
-        total_enqueued += 1
 
-        print(f"📤 Ban queued for server {server_id}")
+        print("✅ ENQUEUED COMMAND:", command)
+        await msg.reply(f"Command `{cmd}` sent to server.")
+        return
 
-    print("📦 Total servers enqueued:", total_enqueued)
+    # ----------------
+    # BAN COMMAND
+    # ----------------
+    if cmd == "ban":
+        try:
+            with db.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO bans(network_id,user_id,reason,moderator)
+                    VALUES (%s,%s,%s,%s)
+                    ON CONFLICT (network_id,user_id)
+                    DO UPDATE SET reason=excluded.reason, banned_at=now()
+                    """,
+                    (NETWORK_ID, user_id, reason, str(msg.author))
+                )
+                db.commit()
+            print("✅ Database updated for ban")
+        except Exception as e:
+            await msg.reply("❌ Database error while banning.")
+            print("❌ DB error:", e)
+            return
 
-    # --- WEBHOOK LOG ---
-    await send_webhook(
-        DISCORD_WEBHOOK_USERBANS,
-        make_embed(
-            0xFF0000,
-            "🔨 Global Ban",
-            [
+        total_enqueued = 0
+        for server_id in list(server_queues.keys()):
+            queue = get_queue(server_id)
+            command = {
+                "id": str(uuid.uuid4()),
+                "action": "ban",
+                "userId": user_id,
+                "reason": reason
+            }
+            queue[command["id"]] = command
+            total_enqueued += 1
+            print(f"📤 Ban queued for server {server_id}")
+
+        await send_webhook(
+            DISCORD_WEBHOOK_USERBANS,
+            make_embed(0xFF0000, "🔨 Global Ban", [
                 {"name": "User ID", "value": str(user_id)},
                 {"name": "Moderator", "value": str(msg.author)},
                 {"name": "Reason", "value": reason},
                 {"name": "Servers Notified", "value": str(total_enqueued)}
-            ]
+            ])
         )
-    )
-
-    await msg.reply(f"✅ User {user_id} globally banned.")
-
-    return
-
-    # =========================
-    # UNBAN
-    # =========================
-    
-@client.event
-async def on_message(msg: discord.Message):
-    if msg.author.bot or not msg.content.startswith(PREFIX):
+        await msg.reply(f"✅ User {user_id} globally banned.")
         return
 
-    parts = msg.content[len(PREFIX):].split()
-    cmd = parts[0].lower()
-    args = parts[1:]    
+    # ----------------
+    # UNBAN COMMAND
+    # ----------------
     if cmd == "unban":
-        print("🔓 Processing UNBAN command")
-
-        with db.cursor() as cur:
-            cur.execute(
-                "delete from bans where network_id=%s and user_id=%s",
-                (NETWORK_ID, user_id)
-            )
-            db.commit()
-
-        print("✅ Database unban completed")
-
-        await msg.reply("User unbanned.")
+        try:
+            with db.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM bans WHERE network_id=%s AND user_id=%s",
+                    (NETWORK_ID, user_id)
+                )
+                db.commit()
+            print(f"✅ User {user_id} unbanned from database")
+            await msg.reply(f"✅ User {user_id} unbanned.")
+        except Exception as e:
+            await msg.reply("❌ Database error while unbanning.")
+            print("❌ DB error:", e)
         return
 
-    # =========================
-    # WARN / UNWARN / KICK
-    # =========================
-    command = {
-        "id": str(uuid.uuid4()),
-        "action": cmd,
-        "userId": user_id,
-        "reason": reason
-    }
-
-    queue = get_queue(entry["serverId"])
-    queue[command["id"]] = command
-
-    print("✅ ENQUEUED COMMAND:", command)
-    print("📤 Current Queue State:", queue)
-
-    await msg.reply(f"Command `{cmd}` sent to server.")
+    # ----------------
+    # UNKNOWN COMMAND
+    # ----------------
+    await msg.reply("❌ Unknown command. Use `!help` to see available commands.")
 
 # =====================
 # ROBLOX ENDPOINTS
