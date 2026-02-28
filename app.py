@@ -118,7 +118,8 @@ async def on_message(msg: discord.Message):
             {"name": "!unwarn <userid>", "value": "Clear warning"},
             {"name": "!kick <userid> <reason>", "value": "Kick from server"},
             {"name": "!ban <userid> <reason>", "value": "Global ban"},
-            {"name": "!unban <userid>", "value": "Remove global ban"}
+            {"name": "!unban <userid>", "value": "Remove global ban"},
+            {"name": "!forceteleport <userid> <placeid>", "value": "Force teleport user"}
         ]))
         return
 
@@ -145,6 +146,44 @@ async def on_message(msg: discord.Message):
         print("❌ User not found in active servers.")
         await msg.reply("User not in any active server.")
         return
+    # ----------------
+    # FORCE TELEPORT
+    # ----------------
+    if cmd == "forceteleport":
+
+        if len(args) < 2:
+            await msg.reply("Usage: !forceteleport <userid> <placeid>")
+            return
+
+        # Parse place ID
+        try:
+            place_id = int(args[1])
+        except:
+            await msg.reply("❌ Invalid place ID.")
+            return
+
+        entry = user_to_server.get(user_id)
+        if not entry:
+            await msg.reply("❌ User not in any active server.")
+            return
+
+        command = {
+            "id": str(uuid.uuid4()),
+            "action": "forceteleport",
+            "userId": user_id,
+            "placeId": place_id,
+            "moderator": str(msg.author)
+        }
+
+        queue = get_queue(entry["serverId"])
+        queue[command["id"]] = command
+
+        print("🚀 FORCE TELEPORT ENQUEUED:", command)
+
+        await msg.reply(
+            f"🚀 Teleport command sent.\nUser: `{user_id}`\nPlace: `{place_id}`"
+        )
+        return
 
 # =========================
 # BAN (REWRITTEN - STABLE)
@@ -170,7 +209,8 @@ async def on_message(msg: discord.Message):
             {"name": "!unwarn <userid>", "value": "Clear warning"},
             {"name": "!kick <userid> <reason>", "value": "Kick from server"},
             {"name": "!ban <userid> <reason>", "value": "Global ban"},
-            {"name": "!unban <userid>", "value": "Remove global ban"}
+            {"name": "!unban <userid>", "value": "Remove global ban"},
+            {"name": "!forceteleport <userid> <placeid>", "value": "Force teleport user"}
         ]))
         return
 
