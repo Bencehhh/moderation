@@ -97,94 +97,6 @@ async def on_ready():
     )
     print("Bot ready")
 
-@client.event
-async def on_message(msg: discord.Message):
-    if msg.author.bot or not msg.content.startswith(PREFIX):
-        return
-
-    print("📩 DISCORD MESSAGE RECEIVED:", msg.content)
-
-    parts = msg.content[len(PREFIX):].split()
-    cmd = parts[0].lower()
-    args = parts[1:]
-
-    print("🔎 Parsed Command:", cmd)
-    print("🔎 Args:", args)
-
-    if cmd == "help":
-        await msg.reply(embed=make_embed(0x5865F2, "📘 Commands", [
-            {"name": "!help", "value": "Show this menu"},
-            {"name": "!warn <userid> <reason>", "value": "Warn player"},
-            {"name": "!unwarn <userid>", "value": "Clear warning"},
-            {"name": "!kick <userid> <reason>", "value": "Kick from server"},
-            {"name": "!ban <userid> <reason>", "value": "Global ban"},
-            {"name": "!unban <userid>", "value": "Remove global ban"},
-            {"name": "!forceteleport <userid> <placeid>", "value": "Force teleport user"}
-        ]))
-        return
-
-    if not args:
-        print("⚠️ No arguments provided.")
-        return
-
-    try:
-        user_id = int(args[0])
-    except Exception as e:
-        print("❌ Failed to parse user_id:", e)
-        await msg.reply("Invalid user ID.")
-        return
-
-    reason = " ".join(args[1:]) or "Rule violation"
-
-    print("🎯 Target User ID:", user_id)
-    print("📝 Reason:", reason)
-
-    entry = user_to_server.get(user_id)
-    print("📦 user_to_server lookup result:", entry)
-
-    if cmd in ("warn", "unwarn", "kick") and not entry:
-        print("❌ User not found in active servers.")
-        await msg.reply("User not in any active server.")
-        return
-    # ----------------
-    # FORCE TELEPORT
-    # ----------------
-    if cmd == "forceteleport":
-
-        if len(args) < 2:
-            await msg.reply("Usage: !forceteleport <userid> <placeid>")
-            return
-
-        # Parse place ID
-        try:
-            place_id = int(args[1])
-        except:
-            await msg.reply("❌ Invalid place ID.")
-            return
-
-        entry = user_to_server.get(user_id)
-        if not entry:
-            await msg.reply("❌ User not in any active server.")
-            return
-
-        command = {
-            "id": str(uuid.uuid4()),
-            "action": "forceteleport",
-            "userId": user_id,
-            "placeId": place_id,
-            "moderator": str(msg.author)
-        }
-
-        queue = get_queue(entry["serverId"])
-        queue[command["id"]] = command
-
-        print("🚀 FORCE TELEPORT ENQUEUED:", command)
-
-        await msg.reply(
-            f"🚀 Teleport command sent.\nUser: `{user_id}`\nPlace: `{place_id}`"
-        )
-        return
-
 # =========================
 # BAN (REWRITTEN - STABLE)
 # =========================
@@ -200,7 +112,7 @@ async def on_message(msg: discord.Message):
     print("📩 Command received:", cmd, "Args:", args)
 
     # ----------------
-    # HELP COMMAND
+    # HELP
     # ----------------
     if cmd == "help":
         await msg.reply(embed=make_embed(0x5865F2, "📘 Commands", [
@@ -227,12 +139,48 @@ async def on_message(msg: discord.Message):
 
     try:
         user_id = int(raw_id)
-    except Exception as e:
+    except:
         await msg.reply("❌ Invalid user ID.")
-        print("❌ Failed to parse user_id:", e)
         return
 
     reason = " ".join(args[1:]) or "Rule violation"
+
+    # ----------------
+    # FORCE TELEPORT
+    # ----------------
+    if cmd == "forceteleport":
+
+        if len(args) < 2:
+            await msg.reply("Usage: !forceteleport <userid> <placeid>")
+            return
+
+        try:
+            place_id = int(args[1])
+        except:
+            await msg.reply("❌ Invalid place ID.")
+            return
+
+        entry = user_to_server.get(user_id)
+        if not entry:
+            await msg.reply("❌ User not in any active server.")
+            return
+
+        command = {
+            "id": str(uuid.uuid4()),
+            "action": "forceteleport",
+            "userId": user_id,
+            "placeId": place_id
+        }
+
+        queue = get_queue(entry["serverId"])
+        queue[command["id"]] = command
+
+        print("🚀 FORCE TELEPORT ENQUEUED:", command)
+
+        await msg.reply(
+            f"🚀 Teleport command sent.\nUser: `{user_id}`\nPlace: `{place_id}`"
+        )
+        return
 
     # ----------------
     # WARN / UNWARN / KICK
@@ -253,12 +201,11 @@ async def on_message(msg: discord.Message):
         queue = get_queue(entry["serverId"])
         queue[command["id"]] = command
 
-        print("✅ ENQUEUED COMMAND:", command)
         await msg.reply(f"Command `{cmd}` sent to server.")
         return
 
     # ----------------
-    # BAN COMMAND
+    # BAN
     # ----------------
     if cmd == "ban":
         try:
@@ -273,7 +220,6 @@ async def on_message(msg: discord.Message):
                     (NETWORK_ID, user_id, reason, str(msg.author))
                 )
                 db.commit()
-            print("✅ Database updated for ban")
         except Exception as e:
             await msg.reply("❌ Database error while banning.")
             print("❌ DB error:", e)
@@ -290,22 +236,12 @@ async def on_message(msg: discord.Message):
             }
             queue[command["id"]] = command
             total_enqueued += 1
-            print(f"📤 Ban queued for server {server_id}")
 
-        await send_webhook(
-            DISCORD_WEBHOOK_USERBANS,
-            make_embed(0xFF0000, "🔨 Global Ban", [
-                {"name": "User ID", "value": str(user_id)},
-                {"name": "Moderator", "value": str(msg.author)},
-                {"name": "Reason", "value": reason},
-                {"name": "Servers Notified", "value": str(total_enqueued)}
-            ])
-        )
         await msg.reply(f"✅ User {user_id} globally banned.")
         return
 
     # ----------------
-    # UNBAN COMMAND
+    # UNBAN
     # ----------------
     if cmd == "unban":
         try:
@@ -315,7 +251,6 @@ async def on_message(msg: discord.Message):
                     (NETWORK_ID, user_id)
                 )
                 db.commit()
-            print(f"✅ User {user_id} unbanned from database")
             await msg.reply(f"✅ User {user_id} unbanned.")
         except Exception as e:
             await msg.reply("❌ Database error while unbanning.")
@@ -323,7 +258,7 @@ async def on_message(msg: discord.Message):
         return
 
     # ----------------
-    # UNKNOWN COMMAND
+    # UNKNOWN
     # ----------------
     await msg.reply("❌ Unknown command. Use `!help` to see available commands.")
 
